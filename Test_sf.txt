@@ -1,0 +1,203 @@
+AZURE_TENANT_ID=<your_tenant_id>
+AZURE_CLIENT_ID=<your_client_id>
+AZURE_CLIENT_SECRET=<your_client_secret>
+SNOWFLAKE_ACCOUNT=<your_snowflake_account>
+SNOWFLAKE_DATABASE=<your_database>
+SNOWFLAKE_SCHEMA=<your_schema>
+SNOWFLAKE_WAREHOUSE=<your_warehouse>
+SNOWFLAKE_ROLE=<your_role>
+SNOWFLAKE_USER=<your_user>
+SNOWFLAKE_RESOURCE_ID=https://<your-snowflake-account>.snowflakecomputing.com
+
+------------------------
+from dotenv import load_dotenv
+import os
+
+load_dotenv()
+
+AZURE_TENANT_ID = os.getenv("AZURE_TENANT_ID")
+AZURE_CLIENT_ID = os.getenv("AZURE_CLIENT_ID")
+AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
+
+SNOWFLAKE_ACCOUNT = os.getenv("SNOWFLAKE_ACCOUNT")
+SNOWFLAKE_DATABASE = os.getenv("SNOWFLAKE_DATABASE")
+SNOWFLAKE_SCHEMA = os.getenv("SNOWFLAKE_SCHEMA")
+SNOWFLAKE_WAREHOUSE = os.getenv("SNOWFLAKE_WAREHOUSE")
+SNOWFLAKE_ROLE = os.getenv("SNOWFLAKE_ROLE")
+SNOWFLAKE_USER = os.getenv("SNOWFLAKE_USER")
+SNOWFLAKE_RESOURCE_ID = os.getenv("SNOWFLAKE_RESOURCE_ID")
+
+---------------
+
+import time
+import requests
+from config.config import AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET
+
+
+class Token:
+    """
+    Provides functionality for managing and obtaining Azure access tokens.
+    """
+
+    def __init__(self):
+        """
+        Initializes an instance of the Token class with required Azure credentials.
+        """
+        self.token_cache = {}  # Caches tokens as {resource_id: (token, expiration_time)}
+        self.tenant_id = AZURE_TENANT_ID
+        self.client_id = AZURE_CLIENT_ID
+        self.client_secret = AZURE_CLIENT_SECRET
+
+    def is_token_valid(self, resource_id, buffer_sec=30):
+        """
+        Checks if the access token for a specific resource ID is still valid.
+
+        Args:
+            resource_id (str): Azure resource ID for the token.
+            buffer_sec (int): Buffer time before token expiration. Defaults to 30 seconds.
+
+        Returns:
+            bool: True if the token is valid, False otherwise.
+        """
+        if resource_id in self.token_cache:
+            _, expiration_time = self.token_cache[resource_id]
+            return (expiration_time - time.time()) > buffer_sec
+        return False
+
+    def get_token(self, resource_id):
+        """
+        Retrieves a valid access token, generating a new one if necessary.
+
+        Args:
+            resource_id (str): Azure resource ID for the token.
+
+        Returns:
+            str: Access token for the resource.
+        """
+        if not self.is_token_valid(resource_id):
+            self.token_cache[resource_id] = self._generate_access_token(resource_id)
+        return self.token_cache[resource_id][0]
+
+    def _generate_access_token(self, resource_id):
+        """
+        Generates a new access token using client credentials.
+
+        Args:
+            resource_id (str): Azure resource ID for the token.
+
+        Returns:
+            tuple: (access_token, expiration_time)
+        """
+        token_url = f"https://login.microsoftonline.com/{self.tenant_id}/oauth2/v2.0/token"
+        data = {
+            "grant_type": "client_credentials",
+            "client_id": self.client_id,
+            "client_secret": self.client_secret,
+            "scope": resource_id + "/.default",
+        }
+        response = requests.post(token_url, data=data)
+        response.raise_for_status()
+        token_data = response.json()
+        return token_data["access_token"], int(token_data["expires_in"]) + time.time()
+
+-----------------
+import snowflake.connector
+from config.config import (
+    SNOWFLAKE_ACCOUNT,
+    SNOWFLAKE_DATABASE,
+    SNOWFLAKE_SCHEMA,
+    SNOWFLAKE_WAREHOUSE,
+    SNOWFLAKE_ROLE,
+    SNOWFLAKE_USER,
+    SNOWFLAKE_RESOURCE_ID,
+)
+from src.tokens import Token
+
+
+class SNOWFLAKE_SQLExecutor:
+    """
+    A class for executing SQL queries on Snowflake using OAuth authentication.
+    """
+
+    def __init__(self):
+        """
+        Initializes the SQLExecutor with authentication and connection details for Snowflake.
+        """
+        self.token_obj = Token()
+        self.resource_id = SNOWFLAKE_RESOURCE_ID
+        self.account = SNOWFLAKE_ACCOUNT
+        self.database = SNOWFLAKE_DATABASE
+        self.schema = SNOWFLAKE_SCHEMA
+        self.warehouse = SNOWFLAKE_WAREHOUSE
+        self.role = SNOWFLAKE_ROLE
+        self.user = SNOWFLAKE_USER
+        self.access_token = self.token_obj.get_token(self.resource_id)
+        self.connection = self._establish_connection()
+
+    def _establish_connection(self):
+        """
+        Establishes a connection to Snowflake.
+
+        Returns:
+            snowflake.connector.connection.SnowflakeConnection: Connection object.
+        """
+        try:
+            connection = snowflake.connector.connect(
+                account=self.account,
+                user=self.user,
+                database=self.database,
+                schema=self.schema,
+                warehouse=self.warehouse,
+                role=self.role,
+                token=self.access_token,
+                authenticator="oauth",
+            )
+            print("✅ Connected to Snowflake successfully!")
+            return connection
+        except Exception as e:
+            print(f"❌ Error: Unable to connect to Snowflake: {e}")
+            return None
+
+    def close_connection(self):
+        """
+        Closes the Snowflake connection.
+        """
+        try:
+            if self.connection:
+                self.connection.close()
+                print("✅ Snowflake connection closed.")
+        except Exception as e:
+            print(f"❌ Exception: Unable to close Snowflake connection: {e}")
+
+    def refresh_connection(self):
+        """
+        Refreshes the connection if the access token has expired or changed.
+        """
+        new_access_token = self.token_obj.get_token(self.resource_id)
+        if new_access_token != self.access_token:
+            self.close_connection()
+            self.access_token = new_access_token
+            self.connection = self._establish_connection()
+
+    def execute_query(self, query, params=None):
+        """
+        Executes a SQL query and returns the result as a list of dictionaries.
+
+        Args:
+            query (str): SQL query to execute.
+            params (tuple, optional): Parameters for the query. Defaults to None.
+
+        Returns:
+            list[dict]: Query result as a list of dictionaries.
+        """
+        self.refresh_connection()
+        cursor = self.connection.cursor()
+        try:
+            cursor.execute(query, params or ())
+            columns = [desc[0] for desc in cursor.description]
+            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as e:
+            print(f"❌ Query execution failed: {e}")
+            return []
+        finally:
+            cursor.close()

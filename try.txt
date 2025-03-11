@@ -1,0 +1,43 @@
+function Authentication({ setIsAuthenticated }) {
+  const [loading, setLoading] = useState(false);
+  const { instance } = useMsal();
+  const navigate = useNavigate();
+
+  const handleLogin = async () => {
+    setLoading(true);
+
+    try {
+      const loginResponse = await instance.loginPopup(loginRequest); // loginPopup prevents page reload
+
+      if (loginResponse.accessToken) {
+        console.log("Access Token:", loginResponse.accessToken);
+
+        const tokenParts = loginResponse.accessToken.split('.');
+        const decodedToken = JSON.parse(atob(tokenParts[1]));
+
+        console.log("Decoded Token Payload:", decodedToken);
+
+        if (decodedToken.scp) {
+          console.log("Scopes (scp):", decodedToken.scp);
+        } else {
+          console.warn("No 'scp' claim found in the token.");
+        }
+
+        setIsAuthenticated(true);
+        navigate('/dashboard');
+      } else {
+        console.error("Token acquisition failed.");
+      }
+    } catch (error) {
+      console.error("Login failed:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
+
+
+
+
+

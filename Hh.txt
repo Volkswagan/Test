@@ -1,0 +1,38 @@
+// login.js
+
+import { useMsal } from "@azure/msal-react";
+import { loginRequest, tokenRequest } from "../auth/authConfig";
+import { useNavigate } from "react-router-dom";
+import { useState } from "react";
+
+function Authentication({ setIsAuthenticated }) {
+  const [loading, setLoading] = useState(false);
+  const { instance } = useMsal();
+  const navigate = useNavigate();
+
+  const handleLogin = async () => {
+    setLoading(true);
+
+    try {
+      await instance.loginRedirect(loginRequest);
+      const tokenResponse = await instance.acquireTokenSilent(tokenRequest);
+      console.log("Access Token:", tokenResponse.accessToken);
+
+      setIsAuthenticated(true);
+      navigate("/dashboard");
+    } catch (error) {
+      console.error("Login failed:", error);
+      showToast("Login failed. Please try again later.", false);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <button onClick={handleLogin} disabled={loading}>
+      {loading ? "Logging in..." : "Login"}
+    </button>
+  );
+}
+
+export default Authentication;

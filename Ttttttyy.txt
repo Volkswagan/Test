@@ -1,0 +1,82 @@
+import { useMsal } from "@azure/msal-react";
+import { loginRequest, tokenRequest } from "../auth/authConfig";
+
+function Authentication({ setIsAuthenticated }) {
+  const [loading, setLoading] = useState(false);
+  const { instance } = useMsal();
+  const navigate = useNavigate();
+
+  const handleLogin = async () => {
+    setLoading(true);
+    try {
+      await instance.loginRedirect(loginRequest);
+    } catch (error) {
+      console.error("Login failed:", error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getAccessToken = async () => {
+    try {
+      const response = await instance.acquireTokenSilent(tokenRequest);
+      const decodedToken = JSON.parse(atob(response.accessToken.split('.')[1]));
+      console.log("Decoded Access Token:", decodedToken);
+      if (response.accessToken) {
+        setIsAuthenticated(true);
+        navigate('/dashboard');
+      }
+    } catch (error) {
+      console.error("Token acquisition failed:", error);
+      if (error.name === "InteractionRequiredAuthError") {
+        try {
+          const response = await instance.acquireTokenPopup(tokenRequest);
+          const decodedToken = JSON.parse(atob(response.accessToken.split('.')[1]));
+          console.log("Decoded Access Token:", decodedToken);
+          setIsAuthenticated(true);
+          navigate('/dashboard');
+        } catch (popupError) {
+          console.error("Popup token acquisition failed:", popupError);
+        }
+      }
+    }
+  };
+
+  useEffect(() => {
+    getAccessToken();
+  }, []);
+
+  return (
+    <div>
+      <button onClick={handleLogin} disabled={loading}>
+        {loading ? 'Logging in...' : 'Login'}
+      </button>
+    </div>
+  );
+}
+
+export default Authentication;
+
+
+
+export const msalConfig = {
+  auth: {
+    clientId: process.env.REACT_APP_AZURE_AD_CLIENT_ID,
+    authority: `https://login.microsoftonline.com/${process.env.REACT_APP_AZURE_AD_TENANT_ID}`,
+    redirectUri: window.location.origin,
+    knownAuthorities: [`https://login.microsoftonline.com/${process.env.REACT_APP_AZURE_AD_TENANT_ID}`],
+    responseMode: 'query'
+  },
+  cache: {
+    cacheLocation: 'sessionStorage',
+    storeAuthStateInCookie: false
+  }
+};
+
+export const loginRequest = {
+  scopes: ["openid", "profile", "offline_access", "User.Read"]
+};
+
+export const tokenRequest = {
+  scopes: ["api://<your-api-client-id>/access_as_user"]
+};
